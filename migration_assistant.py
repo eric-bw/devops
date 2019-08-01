@@ -98,6 +98,12 @@ def is_valid(path):
         return True
     return False
 
+def preflight(path):
+    if ' '  in path:
+        return '"' + path + '"'
+    return path
+
+
 try:
 
     if args.version:
@@ -133,15 +139,15 @@ try:
     for change in rs:
         if change.change_type == 'M' or change.change_type == 'A':
             if is_valid(change.b_path):
-                mod_adds.append(change.b_path)
+                mod_adds.append(preflight(change.b_path))
         elif change.change_type == 'D':
             if is_valid(change.a_path):
-                deletions.append(change.a_path)
+                deletions.append(preflight(change.a_path))
         elif change.change_type == 'R':
             if is_valid(change.a_path):
-                deletions.append(change.a_path)
+                deletions.append(preflight(change.a_path))
             if is_valid(change.b_path):
-                mod_adds.append(change.b_path)
+                mod_adds.append(preflight(change.b_path))
 
     print('capturing changes between master and current feature: ' + repo.head.ref.name)
     print(str(master_head) + '..' + str(head))
