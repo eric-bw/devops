@@ -11,6 +11,10 @@ import subprocess
 import re
 import numbers
 import pyperclip
+import shutil
+from zipfile import ZipFile
+
+# pyinstaller migration_assistant.py --onefile
 
 version = '1.0'
 
@@ -30,17 +34,19 @@ parser.add_argument('-l', '--local-tests',
                     action='store_true',
                     required=False)
 
-parser.add_argument('-checkonly', '--checkonly',
+parser.add_argument('-c', '--checkonly',
                     help='validate only',
                     action='store_true',
                     required=False)
-
-
 
 parser.add_argument('-p', '--path',
                     help='provide path to project repository, defaults to current directory',
                     required=False)
 
+parser.add_argument('-s', '--snapshot',
+                    help='get full package.xml and populate local folder',
+                    action='store_true',
+                    required=False)
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -50,18 +56,18 @@ def is_valid_email(email):
     return False
 
 def get_remote_origin_head(repo):
-    master_head = None
+    master = None
     for remote in repo.remotes:
         if remote.name != 'origin':
             continue
         for ref in remote.refs:
             try:
                 if ref.ref.remote_head == 'master' and ref.remote_head == 'HEAD':
-                    master_head = ref.commit
+                    master = ref
                     break
             except Exception as e:
                 print(e)
-    return master_head
+    return master
 
 def get_env():
     environments = []
@@ -93,6 +99,11 @@ def is_feature_branch(branch_name):
         return True
     return False
 
+def is_release_branch(branch_name):
+    if not branch_name.lower().startswith('release/') :
+        return False
+    return True
+
 def is_valid(path):
     if 'force-app/main/default' in path:
         return True
@@ -114,49 +125,7 @@ try:
 
 
     cwd = args.path if args.path else os.getcwd()
-
-    repo = git.Repo(cwd)
-    master_head = get_remote_origin_head(repo)
-
-    head = repo.head.commit
-
-
-    if not is_feature_branch(repo.head.ref.name):
-        print('feature branches start with "feature/" and contain a JIRA key, example: feature/COES-1. ' + repo.head.ref.name + ' does not look like a feature branch')
-        answer = input('Continue? (y/n)')
-        if answer != 'Y' or answer != 'y':
-            sys.exit()
-    else:
-        try:
-            repo.git.push('origin')
-        except:
-            pass
-
-    rs = master_head.diff(head)
-    deletions = []
-    mod_adds = []
-
-    for change in rs:
-        if change.change_type == 'M' or change.change_type == 'A':
-            if is_valid(change.b_path):
-                mod_adds.append(preflight(change.b_path))
-        elif change.change_type == 'D':
-            if is_valid(change.a_path):
-                deletions.append(preflight(change.a_path))
-        elif change.change_type == 'R':
-            if is_valid(change.a_path):
-                deletions.append(preflight(change.a_path))
-            if is_valid(change.b_path):
-                mod_adds.append(preflight(change.b_path))
-
-    print('capturing changes between master and current feature: ' + repo.head.ref.name)
-    print(str(master_head) + '..' + str(head))
-
-
-    if not mod_adds and not deletions:
-        print('no changes found to deploy, exiting')
-        sys.exit()
-    elif mod_adds or deletions:
+    if args.snapshot:
         if not args.username:
             print()
             print()
@@ -171,28 +140,122 @@ try:
         else:
             environment = args.username
 
-        print('found the following additive changes to deploy:')
-        for f in mod_adds:
-            print('\t' + f)
 
-        print('would you like to deploy these changes to ' + environment + '?')
+        if not os.path.isdir(os.path.join(cwd, 'mdapipkg')):
+            os.mkdir(os.path.join(cwd, 'mdapipkg'))
+        #tmp_path = os.path.join(cwd, 'mdapipkg',str(uuid.uuid4()))
 
-        command = ['sfdx','force:source:deploy','-u', environment, '-p', ','.join(mod_adds)]
+        #os.mkdir(tmp_path)
+        tmp_path = '/Users/erictalley/projects/AnnSB/mdapipkg/d408e8c5-f265-40ac-a87f-9342e1c79eb5'
+        command = ['sfdx','force:mdapi:describemetadata', '-u', environment]
+        subprocess.run(command, cwd = cwd, stdout=subprocess.PIPE)
 
-        if args.local_tests:
-            command.extend(['-l','RunLocalTests'])
 
-        if args.checkonly:
-            command.extend(['--checkonly'])
+        unpackaged = os.path.join(tmp_path,'unpackaged.zip')
+        if os.path.isfile(unpackaged):
+            print('copying package content')
+            with ZipFile(unpackaged) as zp:
+                for f in zp.namelist():
+                    new_path = os.path.join(cwd, 'force-app/main/default', f)
+                    new_dir = os.path.dirname(new_path)
+                    if not os.path.isdir(new_dir):
+                        os.makedirs(new_dir)
+                    open(new_path,'wb').write(zp.read(f))
+                    print(f)
 
-        answer = input('Deploy?(y/n): ')
-        if answer == 'y'  or answer == 'Y':
-            subprocess.run(command, cwd = cwd)
+
+
+
+
+        shutil.rmtree(tmp_path)
+
+
+    else:
+        repo = git.Repo(cwd)
+        master = get_remote_origin_head(repo)
+
+
+
+
+        if is_feature_branch(repo.head.ref.name):
+            try:
+                repo.git.push('origin')
+            except:
+                pass
+        elif is_release_branch(repo.head.ref.name):
+            try:
+                repo.git.push('origin')
+            except:
+                pass
         else:
-            print('here is the deployment line:\n' + ' '.join(command))
-            pyperclip.copy(' '.join(command))
+            print('feature branches start with "feature/" and contain a JIRA key, example: feature/COES-1. ' + repo.head.ref.name + ' does not look like a feature branch')
+            sys.exit()
 
 
-except KeyboardInterrupt:
-    print()
+        common_commit = repo.merge_base(repo.head, master)
+        # print(repo.head, master, common_commit[0])
+        rs = common_commit[0].diff(repo.head)
+        deletions = []
+        mod_adds = []
+
+        for change in rs:
+            if change.change_type == 'M' or change.change_type == 'A':
+                if is_valid(change.b_path):
+                    mod_adds.append(preflight(change.b_path))
+            elif change.change_type == 'D':
+                if is_valid(change.a_path):
+                    deletions.append(preflight(change.a_path))
+            elif change.change_type == 'R':
+                if is_valid(change.a_path):
+                    deletions.append(preflight(change.a_path))
+                if is_valid(change.b_path):
+                    mod_adds.append(preflight(change.b_path))
+
+        print('capturing changes between master and current branch: ' + repo.head.ref.name)
+        print(str(master) + '..' + str(repo.head))
+
+
+        if not mod_adds and not deletions:
+            print('no changes found to deploy, exiting')
+            sys.exit()
+        elif mod_adds or deletions:
+            if not args.username:
+                print()
+                print()
+
+                print('searching for available environments')
+                environments = get_env()
+                if environments:
+                    environment = select_env(environments)
+                else:
+                    print('no environments found, please connect to an org and try again')
+                    sys.exit()
+            else:
+                environment = args.username
+
+            print('found the following additive changes to deploy:')
+            for f in mod_adds:
+                print('\t' + f)
+
+            print('would you like to deploy these changes to ' + environment + '?')
+
+            command = ['sfdx','force:source:deploy','-u', environment, '-p', ','.join(mod_adds)]
+
+            if args.local_tests:
+                command.extend(['-l','RunLocalTests'])
+
+            if args.checkonly:
+                command.extend(['--checkonly'])
+
+            answer = input('Deploy?(y/n): ')
+            if answer == 'y'  or answer == 'Y':
+                subprocess.run(command, cwd = cwd)
+            else:
+                print('here is the deployment line:\n' + ' '.join(command))
+                pyperclip.copy(' '.join(command))
+
+
+
+except Exception as e:
+    print(e)
     sys.exit()
