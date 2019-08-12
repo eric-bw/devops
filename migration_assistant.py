@@ -11,7 +11,7 @@ import requests
 from lib import *
 
 
-version = '1.0'
+version = '1.01'
 
 parser = argparse.ArgumentParser(description='creates a deployment package from the current feature branch')
 
