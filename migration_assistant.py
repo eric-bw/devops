@@ -1,20 +1,15 @@
 import sys
 import git
 import os
-import pathlib
 import argparse
-import re
-from distutils.util import strtobool
 
-import uuid
-import subprocess
-import re
-import numbers
-import pyperclip
-import shutil
-from zipfile import ZipFile
+from packagebuilder import tasks
+import requests
 
 # pyinstaller migration_assistant.py --onefile
+
+from lib import *
+
 
 version = '1.0'
 
@@ -50,79 +45,12 @@ parser.add_argument('-s', '--snapshot',
 
 args = parser.parse_args(sys.argv[1:])
 
-def is_valid_email(email):
-    if re.match("(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)", email) != None:
-        return True
-    return False
-
-def get_remote_origin_head(repo):
-    master = None
-    for remote in repo.remotes:
-        if remote.name != 'origin':
-            continue
-        for ref in remote.refs:
-            try:
-                if ref.ref.remote_head == 'master' and ref.remote_head == 'HEAD':
-                    master = ref
-                    break
-            except Exception as e:
-                print(e)
-    return master
-
-def get_env():
-    environments = []
-    rs = subprocess.run(['sfdx','force:org:list'], cwd = cwd, stdout=subprocess.PIPE)
-    print('enter the number for the environment you want to deploy to:')
-    for i, v in enumerate(str(rs.stdout).split('\\n')):
-        if i > 2:
-            for u in v.split(' '):
-                if is_valid_email(u):
-                    environments.append(u)
-    return environments
-
-def select_env(environments):
-    for i, env in enumerate(environments):
-        print(str(i+1) + ')\t' + env)
-
-    try:
-        rs = input('Enter Number (1 - ' + str(len(environments)) + ', Ctrl+C to cancel) : ')
-        selection = int(rs)
-        return environments[selection - 1]
-    except:
-        print('that is not a valid selection')
-        sys.exit()
-
-def is_feature_branch(branch_name):
-    if not branch_name.lower().startswith('feature/') :
-        return False
-    for key in re.findall('((?<!([A-Za-z])-)[A-Z]+-\d+)', branch_name ):
-        return True
-    return False
-
-def is_release_branch(branch_name):
-    if not branch_name.lower().startswith('release/') :
-        return False
-    return True
-
-def is_valid(path):
-    if 'force-app/main/default' in path:
-        return True
-    return False
-
-def preflight(path):
-    if ' '  in path:
-        return '"' + path + '"'
-    return path
-
 
 try:
 
     if args.version:
         print('version ' + version )
         sys.exit()
-
-
-
 
     cwd = args.path if args.path else os.getcwd()
     if args.snapshot:
@@ -131,7 +59,7 @@ try:
             print()
 
             print('searching for available environments')
-            environments = get_env()
+            environments = get_env(cwd)
             if environments:
                 environment = select_env(environments)
             else:
@@ -141,33 +69,25 @@ try:
             environment = args.username
 
 
-        if not os.path.isdir(os.path.join(cwd, 'mdapipkg')):
-            os.mkdir(os.path.join(cwd, 'mdapipkg'))
-        #tmp_path = os.path.join(cwd, 'mdapipkg',str(uuid.uuid4()))
+        response = subprocess.run(['sfdx','force:org:open', '-u', environment], cwd = cwd, stdout=subprocess.PIPE)
+        settings = Settings().parse_access(str(response.stdout))
+        settings.get_sid(requests.get(settings.login_url))
 
-        #os.mkdir(tmp_path)
-        tmp_path = '/Users/erictalley/projects/AnnSB/mdapipkg/d408e8c5-f265-40ac-a87f-9342e1c79eb5'
-        command = ['sfdx','force:mdapi:describemetadata', '-u', environment]
-        subprocess.run(command, cwd = cwd, stdout=subprocess.PIPE)
+        package = tasks.query_components_from_org(settings)
+        if not os.path.isdir(os.path.join(cwd, 'manifest')):
+            os.mkdir(os.path.join(cwd, 'manifest'))
+        open(os.path.join(cwd, 'manifest') + '/package.xml','w').write(package.xml)
 
+        print('retrieving metadata from', environment + ': be patient, this will take a bit of time.')
+        command = ['sfdx','force:source:retrieve', '-u', environment,'-x','manifest/package.xml','--verbose']
+        print('executing $',' '.join(command))
 
-        unpackaged = os.path.join(tmp_path,'unpackaged.zip')
-        if os.path.isfile(unpackaged):
-            print('copying package content')
-            with ZipFile(unpackaged) as zp:
-                for f in zp.namelist():
-                    new_path = os.path.join(cwd, 'force-app/main/default', f)
-                    new_dir = os.path.dirname(new_path)
-                    if not os.path.isdir(new_dir):
-                        os.makedirs(new_dir)
-                    open(new_path,'wb').write(zp.read(f))
-                    print(f)
+        response = subprocess.run(command, cwd = cwd)
+        print(str(response.stdout))
+        print('metadata retrieval complete')
 
 
 
-
-
-        shutil.rmtree(tmp_path)
 
 
     else:
@@ -224,7 +144,7 @@ try:
                 print()
 
                 print('searching for available environments')
-                environments = get_env()
+                environments = get_env(cwd)
                 if environments:
                     environment = select_env(environments)
                 else:
